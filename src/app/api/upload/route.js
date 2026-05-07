@@ -1,72 +1,83 @@
 // src/app/api/upload/route.js
+
 import { NextResponse } from 'next/server';
 import { verifyAdminToken } from '@/lib/adminAuth';
 import { v2 as cloudinary } from 'cloudinary';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 // ── Configure Cloudinary once ──────────────────────────────────────────────────
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME ||
-              process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
+  cloud_name:
+    process.env.CLOUDINARY_CLOUD_NAME ||
+    process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
+
+  api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// ── Next.js route config — allow large bodies ──────────────────────────────────
-export const config = {
-  api: {
-    bodyParser:     false,
-    responseLimit:  '50mb',
-  },
-};
-
-// ── Helper: upload buffer via stream (no base64 penalty) ──────────────────────
+// ── Helper: upload buffer via stream ───────────────────────────────────────────
 function uploadStream(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
-        timeout: 120000, // 2 min
+        timeout: 120000,
         ...options,
       },
       (error, result) => {
         if (error) return reject(error);
         resolve(result);
-      },
+      }
     );
-    // Write buffer to stream in chunks to avoid memory spikes
-    const chunkSize = 64 * 1024; // 64 KB
+
+    const chunkSize = 64 * 1024;
     let offset = 0;
+
     function writeNext() {
       if (offset >= buffer.length) {
         stream.end();
         return;
       }
+
       const chunk = buffer.slice(offset, offset + chunkSize);
       offset += chunkSize;
+
       const canContinue = stream.write(chunk);
+
       if (canContinue) {
         writeNext();
       } else {
         stream.once('drain', writeNext);
       }
     }
+
     writeNext();
   });
 }
 
-// ── Auth helper (admin cookie OR NextAuth session) ────────────────────────────
+// ── Auth helper ────────────────────────────────────────────────────────────────
 async function isAdmin() {
-  // 1. Admin JWT cookie
+  // Admin JWT cookie
   try {
     const admin = await verifyAdminToken();
+
     if (admin) return true;
   } catch {}
 
-  // 2. NextAuth session fallback
+  // NextAuth session fallback
   try {
     const { getServerSession } = await import('next-auth');
-    const { authOptions }      = await import('@/app/api/auth/[...nextauth]/route');
+
+    const { authOptions } = await import(
+      '@/app/api/auth/[...nextauth]/route'
+    );
+
     const session = await getServerSession(authOptions);
-    if (session?.user?.role?.toUpperCase() === 'ADMIN') return true;
+
+    if (session?.user?.role?.toUpperCase() === 'ADMIN') {
+      return true;
+    }
   } catch {}
 
   return false;
@@ -77,57 +88,82 @@ export async function POST(req) {
   try {
     // Auth check
     const adminOk = await isAdmin();
+
     if (!adminOk) {
       return NextResponse.json(
         { error: 'Admin access required' },
-        { status: 403 },
+        { status: 403 }
       );
     }
 
     // Parse multipart form
     let formData;
+
     try {
       formData = await req.formData();
     } catch (e) {
       return NextResponse.json(
-        { error: 'Failed to parse form data: ' + e.message },
-        { status: 400 },
+        {
+          error: 'Failed to parse form data: ' + e.message,
+        },
+        { status: 400 }
       );
     }
 
     const file = formData.get('file');
+
     const type = (formData.get('type') || 'image').toLowerCase();
 
     if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'No file provided' },
+        { status: 400 }
+      );
     }
 
     // Validate file type
     const mimeType = file.type || '';
+
     if (type === 'video' && !mimeType.startsWith('video/')) {
-      return NextResponse.json({ error: 'Please upload a video file' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Please upload a video file' },
+        { status: 400 }
+      );
     }
+
     if (type === 'image' && !mimeType.startsWith('image/')) {
-      return NextResponse.json({ error: 'Please upload an image file' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Please upload an image file' },
+        { status: 400 }
+      );
     }
 
     // File size check
-    const MAX_IMAGE = 10 * 1024 * 1024;  // 10 MB
-    const MAX_VIDEO = 100 * 1024 * 1024; // 100 MB
-    const maxSize   = type === 'video' ? MAX_VIDEO : MAX_IMAGE;
+    const MAX_IMAGE = 10 * 1024 * 1024;
+    const MAX_VIDEO = 100 * 1024 * 1024;
 
-    const bytes  = await file.arrayBuffer();
+    const maxSize = type === 'video' ? MAX_VIDEO : MAX_IMAGE;
+
+    const bytes = await file.arrayBuffer();
+
     const buffer = Buffer.from(bytes);
 
     if (buffer.length > maxSize) {
       const limitMB = Math.round(maxSize / 1024 / 1024);
+
       return NextResponse.json(
-        { error: `File too large. Maximum size is ${limitMB} MB` },
-        { status: 413 },
+        {
+          error: `File too large. Maximum size is ${limitMB} MB`,
+        },
+        { status: 413 }
       );
     }
 
-    console.log(`📤 Uploading ${type}: ${file.name} (${(buffer.length / 1024).toFixed(0)} KB)`);
+    console.log(
+      `📤 Uploading ${type}: ${file.name} (${(
+        buffer.length / 1024
+      ).toFixed(0)} KB)`
+    );
 
     // ── Upload options ──────────────────────────────────────────────────────
     let result;
@@ -135,18 +171,25 @@ export async function POST(req) {
     if (type === 'video') {
       result = await uploadStream(buffer, {
         resource_type: 'video',
-        folder:        'yoga-temple/videos',
-        chunk_size:    6_000_000,        // 6 MB chunks
-        eager:         [{ format: 'mp4', quality: 'auto' }],
-        eager_async:   true,
+        folder: 'yoga-temple/videos',
+        chunk_size: 6000000,
+        eager: [{ format: 'mp4', quality: 'auto' }],
+        eager_async: true,
       });
     } else {
       result = await uploadStream(buffer, {
-        resource_type:  'image',
-        folder:         'yoga-temple/images',
+        resource_type: 'image',
+        folder: 'yoga-temple/images',
+
         transformation: [
-          { quality: 'auto:good', fetch_format: 'auto' },
-          { width: 1920, crop: 'limit' },            // cap max width
+          {
+            quality: 'auto:good',
+            fetch_format: 'auto',
+          },
+          {
+            width: 1920,
+            crop: 'limit',
+          },
         ],
       });
     }
@@ -154,27 +197,34 @@ export async function POST(req) {
     console.log(`✅ Upload success: ${result.public_id}`);
 
     return NextResponse.json({
-      url:       result.secure_url,
-      publicId:  result.public_id,
-      width:     result.width,
-      height:    result.height,
-      format:    result.format,
-      size:      result.bytes,
+      url: result.secure_url,
+      publicId: result.public_id,
+      width: result.width,
+      height: result.height,
+      format: result.format,
+      size: result.bytes,
     });
-
   } catch (error) {
     console.error('Upload error:', error);
 
-    // Friendly error messages
     let message = 'Upload failed';
-    if (error?.message?.includes('Timeout') || error?.http_code === 499) {
-      message = 'Upload timed out. Try a smaller file or check your connection.';
+
+    if (
+      error?.message?.includes('Timeout') ||
+      error?.http_code === 499
+    ) {
+      message =
+        'Upload timed out. Try a smaller file or check your connection.';
     } else if (error?.http_code === 401) {
-      message = 'Cloudinary credentials are invalid. Check your .env file.';
+      message =
+        'Cloudinary credentials are invalid. Check your environment variables.';
     } else if (error?.message) {
       message = error.message;
     }
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: message },
+      { status: 500 }
+    );
   }
 }
