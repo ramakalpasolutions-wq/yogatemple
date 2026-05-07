@@ -877,3 +877,61 @@ export async function sendPersonalClassNotification({ user, classData }) {
     console.error(`sendPersonalClassNotification → ${user.email}:`, err.message);
   }
 }
+/* ─────────────────────────────────────────
+   Contact Form Email
+───────────────────────────────────────── */
+export async function sendContactEmail({
+  name,
+  email,
+  phone,
+  subject,
+  message,
+}) {
+  try {
+    const adminEmail = getAdminEmail();
+
+    const t = createTransporter();
+
+    if (!t) {
+      console.log(`📧 DEV Contact Email from ${email}`);
+      return true;
+    }
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;padding:20px;">
+        <h2>📩 New Contact Message</h2>
+
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Subject:</strong> ${subject}</p>
+
+        <div style="margin-top:20px;padding:15px;background:#f5f5f5;border-radius:10px;">
+          <p style="white-space:pre-line;">${message}</p>
+          <p><strong>Phone:</strong> ${phone || 'N/A'}</p>
+        </div>
+      </div>
+    `;
+
+    await t.sendMail({
+      from: getSender(),
+      to: adminEmail,
+      replyTo: email,
+      subject: `📩 Contact Form: ${subject}`,
+      html,
+      text: `
+Name: ${name}
+Email: ${email}
+
+Message:
+${message}
+      `,
+    });
+
+    console.log(`✅ Contact email sent → ${adminEmail}`);
+
+    return true;
+  } catch (err) {
+    console.error('❌ sendContactEmail error:', err.message);
+    return false;
+  }
+}
