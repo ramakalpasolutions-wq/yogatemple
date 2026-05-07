@@ -7,7 +7,7 @@ import { v2 as cloudinary } from 'cloudinary';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// ── Configure Cloudinary once ──────────────────────────────────────────────────
+// ── Configure Cloudinary ───────────────────────────────────────────────────────
 cloudinary.config({
   cloud_name:
     process.env.CLOUDINARY_CLOUD_NAME ||
@@ -17,7 +17,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// ── Helper: upload buffer via stream ───────────────────────────────────────────
+// ── Helper: Cloudinary upload stream ──────────────────────────────────────────
 function uploadStream(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -27,6 +27,7 @@ function uploadStream(buffer, options = {}) {
       },
       (error, result) => {
         if (error) return reject(error);
+
         resolve(result);
       }
     );
@@ -41,6 +42,7 @@ function uploadStream(buffer, options = {}) {
       }
 
       const chunk = buffer.slice(offset, offset + chunkSize);
+
       offset += chunkSize;
 
       const canContinue = stream.write(chunk);
@@ -56,16 +58,16 @@ function uploadStream(buffer, options = {}) {
   });
 }
 
-// ── Auth helper ────────────────────────────────────────────────────────────────
+// ── Admin Auth Helper ─────────────────────────────────────────────────────────
 async function isAdmin() {
-  // Admin JWT cookie
+  // Admin JWT
   try {
     const admin = await verifyAdminToken();
 
     if (admin) return true;
   } catch {}
 
-  // NextAuth session fallback
+  // NextAuth fallback
   try {
     const { getServerSession } = await import('next-auth');
 
@@ -83,20 +85,24 @@ async function isAdmin() {
   return false;
 }
 
-// ── POST handler ──────────────────────────────────────────────────────────────
+// ── POST Upload Handler ───────────────────────────────────────────────────────
 export async function POST(req) {
   try {
-    // Auth check
+    // ── Admin Check ──────────────────────────────────────────────────────────
     const adminOk = await isAdmin();
 
     if (!adminOk) {
       return NextResponse.json(
-        { error: 'Admin access required' },
-        { status: 403 }
+        {
+          error: 'Admin access required',
+        },
+        {
+          status: 403,
+        }
       );
     }
 
-    // Parse multipart form
+    // ── Parse FormData ───────────────────────────────────────────────────────
     let formData;
 
     try {
@@ -106,7 +112,9 @@ export async function POST(req) {
         {
           error: 'Failed to parse form data: ' + e.message,
         },
-        { status: 400 }
+        {
+          status: 400,
+        }
       );
     }
 
@@ -116,31 +124,43 @@ export async function POST(req) {
 
     if (!file) {
       return NextResponse.json(
-        { error: 'No file provided' },
-        { status: 400 }
+        {
+          error: 'No file provided',
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    // Validate file type
+    // ── Validate Mime Types ─────────────────────────────────────────────────
     const mimeType = file.type || '';
 
     if (type === 'video' && !mimeType.startsWith('video/')) {
       return NextResponse.json(
-        { error: 'Please upload a video file' },
-        { status: 400 }
+        {
+          error: 'Please upload a valid video file',
+        },
+        {
+          status: 400,
+        }
       );
     }
 
     if (type === 'image' && !mimeType.startsWith('image/')) {
       return NextResponse.json(
-        { error: 'Please upload an image file' },
-        { status: 400 }
+        {
+          error: 'Please upload a valid image file',
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    // File size check
+    // ── File Size Limits ────────────────────────────────────────────────────
     const MAX_IMAGE = 10 * 1024 * 1024;
-    const MAX_VIDEO = 100 * 1024 * 1024;
+    const MAX_VIDEO = 200 * 1024 * 1024;
 
     const maxSize = type === 'video' ? MAX_VIDEO : MAX_IMAGE;
 
@@ -155,7 +175,9 @@ export async function POST(req) {
         {
           error: `File too large. Maximum size is ${limitMB} MB`,
         },
-        { status: 413 }
+        {
+          status: 413,
+        }
       );
     }
 
@@ -165,47 +187,98 @@ export async function POST(req) {
       ).toFixed(0)} KB)`
     );
 
-    // ── Upload options ──────────────────────────────────────────────────────
-    let result;
+    // ────────────────────────────────────────────────────────────────────────
+    // VIDEO UPLOAD → CLOUDFLARE STREAM
+    // ────────────────────────────────────────────────────────────────────────
 
     if (type === 'video') {
-      result = await uploadStream(buffer, {
-        resource_type: 'video',
-        folder: 'yoga-temple/videos',
-        chunk_size: 6000000,
-        eager: [{ format: 'mp4', quality: 'auto' }],
-        eager_async: true,
-      });
-    } else {
-      result = await uploadStream(buffer, {
-        resource_type: 'image',
-        folder: 'yoga-temple/images',
+      const cloudflareForm = new FormData();
 
-        transformation: [
-          {
-            quality: 'auto:good',
-            fetch_format: 'auto',
+      const blob = new Blob([buffer], {
+        type: mimeType,
+      });
+
+      cloudflareForm.append('file', blob, file.name);
+
+      const response = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream`,
+        {
+          method: 'POST',
+
+          headers: {
+            Authorization: `Bearer ${process.env.CLOUDFLARE_STREAM_TOKEN}`,
           },
-          {
-            width: 1920,
-            crop: 'limit',
-          },
-        ],
+
+          body: cloudflareForm,
+        }
+      );
+
+      const data = await response.json();
+
+      console.log('Cloudflare Response:', data);
+
+      if (!data.success) {
+        throw new Error(
+          data?.errors?.[0]?.message ||
+            'Cloudflare video upload failed'
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+
+        type: 'video',
+
+        videoId: data.result.uid,
+
+        playbackUrl: `https://customer-${process.env.CLOUDFLARE_CUSTOMER_SUBDOMAIN}.cloudflarestream.com/${data.result.uid}/watch`,
+
+        thumbnail: `https://customer-${process.env.CLOUDFLARE_CUSTOMER_SUBDOMAIN}.cloudflarestream.com/${data.result.uid}/thumbnails/thumbnail.jpg`,
       });
     }
 
-    console.log(`✅ Upload success: ${result.public_id}`);
+    // ────────────────────────────────────────────────────────────────────────
+    // IMAGE UPLOAD → CLOUDINARY
+    // ────────────────────────────────────────────────────────────────────────
+
+    const result = await uploadStream(buffer, {
+      resource_type: 'image',
+
+      folder: 'yoga-temple/images',
+
+      transformation: [
+        {
+          quality: 'auto:good',
+          fetch_format: 'auto',
+        },
+        {
+          width: 1920,
+          crop: 'limit',
+        },
+      ],
+    });
+
+    console.log(`✅ Image Upload Success: ${result.public_id}`);
 
     return NextResponse.json({
+      success: true,
+
+      type: 'image',
+
       url: result.secure_url,
+
       publicId: result.public_id,
+
       width: result.width,
+
       height: result.height,
+
       format: result.format,
+
       size: result.bytes,
     });
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('❌ Upload error:', error);
 
     let message = 'Upload failed';
 
@@ -217,14 +290,18 @@ export async function POST(req) {
         'Upload timed out. Try a smaller file or check your connection.';
     } else if (error?.http_code === 401) {
       message =
-        'Cloudinary credentials are invalid. Check your environment variables.';
+        'Cloudinary credentials are invalid. Check environment variables.';
     } else if (error?.message) {
       message = error.message;
     }
 
     return NextResponse.json(
-      { error: message },
-      { status: 500 }
+      {
+        error: message,
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
