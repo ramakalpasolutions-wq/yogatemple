@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ─── USER ─────────────────────────────────────────────────────────────────────
+model User {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  email           String    @unique
+  phone           String?
+  password        String?
+  avatar          String?
+  address         String?
+  role            Role      @default(USER)
+  isVerified      Boolean   @default(false)
+  isEmailVerified Boolean   @default(false)
+  isPhoneVerified Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  provider        String    @default("credentials")
+  providerId      String?
+  lastLogin       DateTime?
+  otp             String?
+  otpExpiry       DateTime?
+  phoneOtp        String?
+  phoneOtpExpiry  DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  subscription    Subscription?
+  bookings        Booking[]
+  sessions        Session[]
+  accounts        Account[]
+  payments        Payment[]
+  personalClasses Class[]   @relation("PersonalClasses")
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+  INSTRUCTOR
+}
+
+// ─── ADMIN ACCOUNT ────────────────────────────────────────────────────────────
+model AdminAccount {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  username  String    @unique
+  password  String
+  email     String    @unique
+  name      String
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("admin_accounts")
+}
+
+// ─── SUBSCRIPTION ─────────────────────────────────────────────────────────────
+model Subscription {
+  id                String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String           @unique @db.ObjectId
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan              SubscriptionPlan @default(NONE)
+
+  // ★ ADD: stores the real human-readable plan name (e.g. "45 Days Hatha Plan")
+  // instead of the enum value (e.g. "QUARTERLY")
+  planName          String?
+
+  category          String?
+  startDate         DateTime?
+  endDate           DateTime?
+  isActive          Boolean          @default(false)
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@map("subscriptions")
+}
+
+enum SubscriptionPlan {
+  NONE
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+// ─── ACCOUNT (NextAuth OAuth) ─────────────────────────────────────────────────
+model Account {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @db.ObjectId
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.String
+  access_token      String? @db.String
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.String
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// ─── CLASS ────────────────────────────────────────────────────────────────────
+model Class {
+  id               String        @id @default(auto()) @map("_id") @db.ObjectId
+  title            String
+  description      String?
+  instructor       String
+  instructorBio    String?
+  instructorAvatar String?
+  level            ClassLevel
+  type             ClassType
+  duration         Int
+  category         ClassCategory
+  image            String?
+  imagePublicId    String?
+
+  // ── Video fields ──────────────────────────────────────────────────────────
+  videoUrl         String?
+  videoKey         String?
+  videoPublicId    String?
+  videoProvider    String?
+
+  // ── Live class fields ─────────────────────────────────────────────────────
+  googleMeetLink   String?
+  scheduledAt      DateTime?
+  calendarEventId  String?
+
+  // ── Metadata ──────────────────────────────────────────────────────────────
+  isPremium        Boolean       @default(false)
+  isActive         Boolean       @default(true)
+  isPublished      Boolean       @default(false)
+  price            Float         @default(0)
+  maxParticipants  Int           @default(30)
+  enrolledCount    Int           @default(0)
+  tags             String[]
+  rating           Float         @default(0)
+  reviewCount      Int           @default(0)
+
+  // ── Personal class targeting ───────────────────────────────────────────────
+  isPersonal       Boolean       @default(false)
+  targetUserId     String?       @db.ObjectId
+  targetUser       User?         @relation("PersonalClasses", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  // ── Reminder tracking ─────────────────────────────────────────────────────
+  reminderMilestones String[]    @default([])
+  reminderSent       Boolean     @default(false)
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  bookings Booking[]
+
+  @@map("classes")
+}
+
+enum ClassLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  ALL_LEVELS
+}
+
+enum ClassType {
+  LIVE
+  RECORDED
+  BOTH
+}
+
+enum ClassCategory {
+  HATHA
+  VINYASA
+  ASHTANGA
+  YIN
+  RESTORATIVE
+  POWER
+  KUNDALINI
+  PRENATAL
+  KIDS
+  MEDITATION
+  PRANAYAMA
+}
+
+// ─── BOOKING ─────────────────────────────────────────────────────────────────
+model Booking {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String        @db.ObjectId
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  classId      String?       @db.ObjectId
+  class        Class?        @relation(fields: [classId], references: [id], onDelete: SetNull)
+  sessionTitle String?
+  type         String?
+  status       BookingStatus @default(CONFIRMED)
+  paymentId    String?
+  amount       Float         @default(0)
+  meetLink     String?
+  notes        String?
+  reminderSent Boolean       @default(false)
+  bookedAt     DateTime      @default(now())
+  scheduledAt  DateTime?
+  updatedAt    DateTime      @updatedAt
+
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  ATTENDED
+  PENDING
+}
+
+// ─── SESSION ─────────────────────────────────────────────────────────────────
+model Session {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  title          String
+  type           SessionType
+  description    String?
+  instructor     String
+  userId         String?       @db.ObjectId
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  scheduledAt    DateTime
+  duration       Int           @default(60)
+  googleMeetLink String?
+  status         SessionStatus @default(SCHEDULED)
+  notes          String?
+  price          Float         @default(0)
+  isPaid         Boolean       @default(false)
+  paymentId      String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@map("sessions")
+}
+
+enum SessionType {
+  COUNSELLING
+  TRAINING
+  WORKSHOP
+  RETREAT
+}
+
+enum SessionStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+// ─── CONTACT ─────────────────────────────────────────────────────────────────
+model Contact {
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  email     String
+  phone     String?
+  subject   String
+  message   String
+  status    ContactStatus @default(NEW)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@map("contacts")
+}
+
+enum ContactStatus {
+  NEW
+  READ
+  REPLIED
+}
+
+// ─── PAYMENT ─────────────────────────────────────────────────────────────────
+model Payment {
+  id                String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String        @db.ObjectId
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan              String?
+  category          String?
+  amount            Float?
+  currency          String        @default("INR")
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+  status            PaymentStatus @default(PENDING)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+// ─── PRICING PLAN ────────────────────────────────────────────────────────────
+model PricingPlan {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  key          String   @unique
+  name         String
+  price        Float
+  period       String
+  badge        String?
+  icon         String?
+  description  String?
+  features     String[]
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  planType     String?  @default("CATEGORY_DAYS")
+  durationDays Int?
+  planCategory String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("pricing_plans")
+}
+
+// ─── ENQUIRY LEAD ────────────────────────────────────────────────────────────
+model EnquiryLead {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String   @db.ObjectId
+  userName          String
+  userEmail         String
+  userPhone         String?
+  planKey           String
+  planName          String
+  amount            Float
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  message           String?
+  status            String   @default("NEW")
+  adminNotes        String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("enquiry_leads")
+}
+
+// ─── HERO IMAGE ──────────────────────────────────────────────────────────────
+model HeroImage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  imageUrl  String
+  publicId  String?
+  title     String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("hero_images")
+}
+
+// ─── SITE SETTING ────────────────────────────────────────────────────────────
+model SiteSetting {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("site_settings")
+}
